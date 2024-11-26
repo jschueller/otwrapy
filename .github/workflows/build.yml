@@ -12,7 +12,7 @@ jobs:
       - name: Build
         shell: bash -l {0}
         run: |
-          conda install -y openturns numpy pytest joblib ipyparallel pathos dask asyncssh sphinx numpydoc build twine
+          conda install -y openturns numpy pytest joblib ipyparallel pathos dask asyncssh sphinx numpydoc twine
           pip install .
           pytest -s
           make html -C doc BUILDDIR=~/.local/share/otwrapy/doc
