@@ -481,6 +481,80 @@ def _exec_sample_pathos(func, n_cpus):
     return _exec_sample
 
 
+def _exec_sample_pydefx(func, n_cpus):
+    """Return a function that executes a sample in parallel using pydefx.
+
+    Parameters
+    ----------
+    func : Function or callable
+        A callable python object, usually a function. The function should take
+        an input vector as argument and return an output vector.
+
+    n_cpus : int
+        Number of CPUs on which to distribute the function calls.
+
+    Returns
+    -------
+    _exec_sample : Function or callable
+        The parallelized function.
+    """
+    def _exec_sample(X):
+        import pydefx
+        params = pydefx.Parameters("localhost", n_cpus)
+        params.salome_parameters.work_directory = os.path.join(params.salome_parameters.work_directory, "otwrapy")
+        params.createResultDirectory("/tmp")
+        study = pydefx.PyStudy()
+        local_work_dir = params.salome_parameters.result_directory
+        Xs = ot.Sample(X)
+        nb_inputs = Xs.getDimension()
+        nb_outputs = func.getOutputDimension()
+        args = ", ".join([f"p{i}" for i in range(nb_inputs)])
+        outs = ", ".join([f"y{i}" for i in range(nb_outputs)])
+        FUNCTION_DUMP_FILE_NAME = "function_dump.xml"
+        callable_dump_file = os.path.join(local_work_dir, FUNCTION_DUMP_FILE_NAME)
+        studyOT = ot.Study()
+        studyOT.add("function", ot.Function(func))
+        studyOT.setStorageManager(ot.XMLStorageManager(callable_dump_file))
+        studyOT.save()
+        params.salome_parameters.in_files.append(callable_dump_file)
+        run_script = pydefx.PyScript()
+        run_script.loadString(f"""
+import openturns as ot
+def _exec({args}):
+    studyOT = ot.Study()
+    studyOT.setStorageManager(ot.XMLStorageManager("{FUNCTION_DUMP_FILE_NAME}"))
+    studyOT.load()
+    function = ot.Function()
+    studyOT.fillObject("function", function)
+    X = [{args}]
+    Y = function(X)
+    {outs} = Y[0] if len(Y) == 1 else Y
+    return {outs}
+""")
+        ydefx_sample = run_script.CreateEmptySample()
+        dict_sample = {}
+        for i in range(nb_inputs):
+            dict_sample[f"p{i}"] = []
+        for point in Xs:
+            for i in range(nb_inputs):
+                dict_sample[f"p{i}"].append(point[i])
+        ydefx_sample.setInputValues(dict_sample)
+        study.createNewJob(run_script, ydefx_sample, params)
+        study.launch()
+        study.wait()
+        result = study.getResult()
+        if result.hasErrors():
+            print(result.getErrors())
+            print(study.sample.getMessages())
+            raise RuntimeError("Could not evaluate sample using pydefx backend")
+        outS = ot.Sample(len(Xs), nb_outputs)
+        for i in range(len(Xs)):
+            for j in range(nb_outputs):
+                outS[i, j] = study.sample.getOutput(f"y{j}")[i]
+        return outS
+    return _exec_sample
+
+
 def _exec_sample_ipyparallel(func, n_cpus, ipp_client_kw):
     """Return a function that executes a sample in parallel using ipyparallel.
 
@@ -624,8 +698,8 @@ class Parallelizer(ot.OpenTURNSPythonFunction):
 
     backend : str, optional
         Whether to parallelize using 'ipyparallel', 'joblib', 'pathos',
-        'multiprocessing', 'dask/ssh', 'dask/slurm', 'concurrent/thread', 'concurrent/process'
-        or 'serial'.
+        'multiprocessing', 'dask/ssh', 'dask/slurm', 'concurrent/thread', 'concurrent/process',
+        'pydefx' or 'serial'.
         Default is multiprocessing.
         Also the backend will fallback to multiprocessing when the corresponding third-party
         cannot be imported.
@@ -703,7 +777,7 @@ class Parallelizer(ot.OpenTURNSPythonFunction):
             backend = "ipyparallel"
             warnings.warn("'ipython' backend is deprecated, use 'ipyparallel'", DeprecationWarning)
 
-        assert backend in ["serial", "ipyparallel", "multiprocessing", "pathos",
+        assert backend in ["serial", "ipyparallel", "multiprocessing", "pathos", "pydefx",
                            "joblib", "dask/ssh", "dask/slurm",
                            "concurrent/thread", "concurrent/process"], f"Unknown backend: {backend}"
 
@@ -727,9 +801,13 @@ class Parallelizer(ot.OpenTURNSPythonFunction):
         elif backend == "concurrent/thread":
             self._exec_sample = _exec_sample_concurrent(
                 self.wrapper, self.n_cpus, "thread", self.verbosity)
+
         elif backend == "concurrent/process":
             self._exec_sample = _exec_sample_concurrent(
                 self.wrapper, self.n_cpus, "process", self.verbosity)
+
+        elif backend == "pydefx":
+            self._exec_sample = _exec_sample_pydefx(self.wrapper, self.n_cpus)
 
         elif backend == "dask/ssh":
             assert 'scheduler' in self.dask_args, 'dask_args must have "scheduler" as key'

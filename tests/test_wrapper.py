@@ -12,6 +12,12 @@ except ImportError:
     have_pathos = False
 
 try:
+    importlib.import_module("pydefx")
+    have_pydefx = True
+except ImportError:
+    have_pathos = False
+
+try:
     importlib.import_module("ipyparallel")
     have_ipyparallel = True
 except ImportError:
@@ -32,6 +38,8 @@ def backendtest(backend):
     if n_cpu > 3:
         sizes.append(n_cpu - 2)
     model = ex_beam.Wrapper(sleep=0.2)
+    if backend == "pydefx": # FIXME: cannot load python function from inside container
+        model = ot.SymbolicFunction(["E", "F", "L", "I"], ["F * L^3 / (3.0 * E * I)"])
     dask_args = None
     ipp_client_kw = {}
     if backend == "dask":
@@ -80,6 +88,11 @@ def test_concurrent_thread():
 
 def test_concurrent_process():
     backendtest("concurrent/process")
+
+
+@pytest.mark.skipif(not have_pydefx, reason="N/A")
+def test_pydefx():
+    backendtest("pydefx")
 
 
 @pytest.mark.skip(reason="needs passwordless ssh configuration")
